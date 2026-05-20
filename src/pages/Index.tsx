@@ -41,7 +41,7 @@ function AnimatedTitle({ accent, rest = '', from: f, to: t, suffixRgba, fontSize
 
 const NstartHand = () => (
   <a href="https://nstart.me/en" target="_blank" rel="noopener noreferrer" className="hover:opacity-75 transition-opacity shrink-0">
-    <svg className="h-[92px] w-auto" fill="url(#fizx-shaka)" viewBox="0 0 210 282">
+    <svg className="h-8 w-auto" fill="url(#fizx-shaka)" viewBox="0 0 210 282">
         <defs>
           <linearGradient id="fizx-shaka" x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%" stopColor="#f0f9ff" />
@@ -271,14 +271,62 @@ function useNostrLogin() {
   return { pubkey, login, logout };
 }
 
+// Light-weight kind:0 lookup so the nav login button can show the user's
+// avatar + NIP-05 / display name. Lazy: only opens a socket once `pubkey` is set.
+function useUserProfile(pubkey: string | null) {
+  const [profile, setProfile] = useState<{ nip05?: string; name?: string; display_name?: string; picture?: string } | null>(null);
+  useEffect(() => {
+    if (!pubkey) { setProfile(null); return; }
+    setProfile(null);
+    const relays = ['wss://relay.fizx.uk', 'wss://nos.lol'];
+    const sockets: WebSocket[] = [];
+    let latestTs = 0;
+    relays.forEach(url => {
+      let ws: WebSocket;
+      try { ws = new WebSocket(url); } catch { return; }
+      sockets.push(ws);
+      const subId = `prof-${Math.random().toString(36).slice(2, 8)}`;
+      ws.onopen = () => { try { ws.send(JSON.stringify(['REQ', subId, { kinds: [0], authors: [pubkey], limit: 1 }])); } catch { /* ignore */ } };
+      ws.onmessage = (e) => {
+        try {
+          const m = JSON.parse(e.data as string);
+          if (!Array.isArray(m)) return;
+          if (m[0] === 'EVENT' && m[1] === subId) {
+            const ev = m[2];
+            if (ev?.created_at > latestTs) {
+              latestTs = ev.created_at;
+              try {
+                const p = JSON.parse(ev.content);
+                if (p && typeof p === 'object') setProfile(p);
+              } catch { /* malformed metadata */ }
+            }
+          } else if (m[0] === 'EOSE') {
+            try { ws.close(); } catch { /* ignore */ }
+          }
+        } catch { /* malformed frame */ }
+      };
+    });
+    return () => { sockets.forEach(s => { try { s.close(); } catch { /* ignore */ } }); };
+  }, [pubkey]);
+  return profile;
+}
+
 function NostrLogin({ pubkey, login, logout }: { pubkey: string | null; login: () => void; logout: () => void }) {
-  if (pubkey) return (
-    <button onClick={logout} className="font-mono text-[11px] px-2 py-1 border border-primary/30 text-primary/70 hover:text-primary hover:border-primary/60 transition-colors flex items-center gap-1.5 w-full justify-center whitespace-nowrap">
-      <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
-      <span className="hidden sm:inline">{pubkey.slice(0, 8)}…</span>
-      <span className="text-muted-foreground/50 ml-0.5">×</span>
-    </button>
-  );
+  const profile = useUserProfile(pubkey);
+  if (pubkey) {
+    const label = profile?.nip05 || profile?.display_name || profile?.name || `${pubkey.slice(0, 8)}…`;
+    return (
+      <button onClick={logout} title={`Signed in as ${label} — click to log out`} className="font-mono text-[11px] px-1.5 py-1 border border-primary/30 text-primary/70 hover:text-primary hover:border-primary/60 transition-colors flex items-center gap-1.5 w-full justify-center whitespace-nowrap">
+        {profile?.picture ? (
+          <span className="w-4 h-4 rounded-full shrink-0 bg-muted bg-cover bg-center ring-1 ring-primary/30" style={{ backgroundImage: `url(${JSON.stringify(profile.picture)})` }} aria-hidden />
+        ) : (
+          <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
+        )}
+        <span className="hidden sm:inline max-w-[11rem] truncate">{label}</span>
+        <span className="text-muted-foreground/50 ml-0.5">×</span>
+      </button>
+    );
+  }
   return (
     <button onClick={login} className="font-mono text-[11px] px-2 py-1 border border-border text-muted-foreground hover:text-primary hover:border-primary/30 transition-colors flex items-center gap-1.5 w-full justify-center whitespace-nowrap">
       <svg className="h-3 w-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
@@ -940,29 +988,26 @@ export default function Index() {
           <a href="https://github.com/adjmx/trth.fizx.uk" target="_blank" rel="noopener noreferrer" title="Source on GitHub" aria-label="Source on GitHub" className="shrink-0 text-muted-foreground/60 hover:text-primary transition-colors">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56 0-.28-.01-1.02-.02-2-3.2.69-3.88-1.54-3.88-1.54-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.71 1.26 3.37.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18.92-.26 1.91-.39 2.89-.39.98 0 1.97.13 2.89.39 2.21-1.49 3.18-1.18 3.18-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.69 5.41-5.25 5.69.41.36.77 1.07.77 2.16 0 1.56-.01 2.82-.01 3.21 0 .31.21.68.8.56 4.56-1.52 7.85-5.83 7.85-10.91C23.5 5.65 18.35.5 12 .5z"/></svg>
           </a>
-          <div className="shrink-0 flex justify-end w-[34px] sm:w-[160px]"><NostrLogin pubkey={pubkey} login={login} logout={logout} /></div>
+          <NstartHand />
+          <div className="shrink-0 flex justify-end w-[34px] sm:w-[210px]"><NostrLogin pubkey={pubkey} login={login} logout={logout} /></div>
         </div>
       </nav>
 
-      {/* Header — standard pattern */}
+      {/* Header — hero card (title + subtitle + relay indicator + Shaka) */}
       <div className="border-b border-border">
         <div className="max-w-5xl mx-auto px-6 pt-8 pb-5">
-          <div className="flex items-center justify-between gap-4 mb-2">
-            <AnimatedTitle accent="trth" rest="²" from="#c084fc" to="#a78bfa" suffixRgba="rgba(192,132,252,0.55)" />
-            <NstartHand />
-          </div>
-          <div className="flex items-center gap-[3px] mb-2">
-            {SQUARE_COLORS.map((litColor, i) => (
-              <div key={i} className="flex-1 h-[2px] transition-colors duration-300"
-                style={{ backgroundColor: i < tick ? litColor : SQUARE_DIM }} />
-            ))}
+          <div className="bg-card border border-border px-4 py-3 mb-4 min-h-[110px] flex items-start gap-3">
+            <div className="flex-1 min-w-0 space-y-1">
+              <AnimatedTitle accent="trth" rest="" from="#c084fc" to="#a78bfa" suffixRgba="rgba(192,132,252,0.55)" fontSize="clamp(28px, 5vw, 40px)" />
+              <div className="flex items-center gap-2 text-[10px] font-mono">
+                <span className="text-muted-foreground/70 truncate">truth stakes · nostr kind {CHALLENGE_KIND}{loading && <span className="text-muted-foreground/40 animate-pulse"> · syncing…</span>}</span>
+              </div>
+            </div>
           </div>
           <div className="flex items-center gap-3">
             <span className="h-[2px] bg-primary/50 shrink-0" style={{ width: 'calc((100% - 60px) / 21)' }} />
-            <p className="text-sm text-muted-foreground flex-1 flex items-center gap-2 flex-wrap">
-              <span>truth stakes · nostr kind {CHALLENGE_KIND}{loading && <span className="text-muted-foreground/40 animate-pulse"> · syncing…</span>}</span>
-              <GraspBadge wsUrl={RELAY_URL} />
-            </p>
+            <GraspBadge wsUrl={RELAY_URL} />
+            <div className="flex-1" />
             <div className="flex shrink-0">
               <button onClick={() => setView('game')}
                 className={`font-mono text-[10px] px-3 py-1.5 border-l border-t border-b transition-colors ${view === 'game' ? 'border-primary/50 bg-primary/10 text-primary' : 'border-border text-muted-foreground/40 hover:text-muted-foreground/70'}`}>
@@ -987,6 +1032,34 @@ export default function Index() {
           <GameView pubkey={pubkey} challenges={challenges} />
         </div>
       )}
+
+      {/* Footer — cross-site chips */}
+      <footer className="border-t border-border px-6 py-4">
+        <div className="max-w-5xl mx-auto flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-xs font-mono">
+          <div className="flex items-center gap-4">
+            <a href="https://ln.fizx.uk" className="flex items-center gap-1.5 text-muted-foreground/60 hover:text-primary transition-colors">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="#a78bfa" aria-hidden="true">
+                <path d="M13 2L4.5 13.5H11L10 22L20.5 10.5H14L13 2z"/>
+              </svg>
+              <span>ln<span className="text-muted-foreground/40">.fizx.uk</span></span>
+            </a>
+            <a href="https://recipes.fizx.uk" className="flex items-center gap-1.5 text-muted-foreground/60 hover:text-primary transition-colors">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
+                <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+              </svg>
+              <span>recipes<span className="text-muted-foreground/40">.fizx.uk</span></span>
+            </a>
+            <a href="https://relay.fizx.uk" className="flex items-center gap-1.5 text-muted-foreground/60 hover:text-primary transition-colors">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#34d399" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/>
+              </svg>
+              <span>relay<span className="text-muted-foreground/40">.fizx.uk</span></span>
+            </a>
+          </div>
+          <span className="text-primary/60">✦ built with claude</span>
+        </div>
+      </footer>
     </div>
   );
 }
